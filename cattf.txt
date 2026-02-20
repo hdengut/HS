@@ -1,0 +1,656 @@
+       PROGRAM HS
+       IMPLICIT DOUBLE PRECISION (A-H,O-Z)
+       PARAMETER (PI=3.141592653589793D0)
+       DIMENSION X(1000),Y(1000),Z(1000)
+       COMMON/POS/X,Y,Z   		! particle coordinates
+       COMMON/TOT/NTOT    	 	! total number of particles
+       COMMON/BOX/ALX,ALY,ALZ    	! box dimensions
+       COMMON/HBOX/HALX,HALY,HALZ  	! half box lengths
+       COMMON/SIDE/AREA               	! surface area parameter 
+       COMMON/PRESSURE/PS		! applied pressure
+       COMMON/P123/PG(250),PC(250)      ! g(r) histograms
+       COMMON/ATT/ASP,AW                ! attraction constants (ASP: particle-particle, AW: wall)
+       DATA X/1000*0.D0/		! Initialize all X coordinates to zero
+       DATA Y/1000*0.D0/		! Initialize all Y coordinates to zero
+       DATA Z/1000*0.D0/		! Initialize all Z coordinates to zero
+       DATA PG/250*0.D0/		! Initialize pair-correlation histogram to zero
+       DATA PC/250*0.D0/		! Initialize position-correlation histogram to zero
+
+          NSEED = TIME() 		! Get a random seed from the system clock
+          CALL SRAND(NSEED)		! Initialize random number generator
+
+          OPEN(14,FILE="INPUT",STATUS = "UNKNOWN")
+
+            READ(14,*) NCON  		! number of MC cycles
+            READ(14,*) ALX,ALY,ALZ	! box lengths	
+            READ(14,*) NTOT		! number of particles
+            READ(14,*) AREA		! surface area (if used)
+           CLOSE(14)
+
+           HALX = 0.5D0*ALX		! Compute half-length of box in x direction
+           HALY = 0.5D0*ALY		! Compute half-length of box in y direction
+           HALZ = 0.5D0*ALZ		! Compute half-length of box in z direction
+
+          CALL SRAND(NSEED)		! Seed the random generator again (redundant but harmless)
+
+
+C         PS = 20.D0			! Example of setting pressure (commented out)
+C         PS = 12.D0
+C         PS = 1.D0
+C         PS = 9.D0
+          
+          NSKIP = 50			! Frequency to perform analysis/output every 50 cycles
+
+C         AREA = (ALX+1.D0)*(ALY+1.D0) 			! Example: compute area manually if needed
+C         AREA = AREA*(ALX+1.D0)*(ALZ+1.D0)
+C         AREA = AREA*2.D0*(ALY+1.D0)*(ALZ+1.D0)
+          
+          VBOX = (ALX+1.D0)*(ALY+1.D0)*(ALZ+1.D0) 	! Compute simulation box volume
+          print*,"packing fraction", NTOT*PI/6.D0/VBOX 	! Print particle packing fraction = N * (π/6) / V
+C         print*, "AREA", AREA				! Optional print of surface area
+
+    
+           DR = RS/100.D0				! Define small radial increment (RS variable not defined here — maybe unused)
+
+            OPEN(12, FILE="POS.TXT",STATUS="UNKNOWN")	! Open initial positions file (unit 12)
+
+              DO K = 1 , NTOT 				! Loop over all particles
+
+               READ(12,*)X(K),Y(K),Z(K)			! Read particle coordinates from POS.TXT
+   
+              ENDDO
+
+            CLOSE(12)					! Close position file
+
+            DO K1 = 1 , NTOT					! Check all particles
+
+             IF (X(K1).LT.-HALX .OR. X(K1).GT.HALX) THEN	! If X is outside box bounds
+                  print*,"x out-of-bound", K1, X(K1)		! Print error message
+                  GOTO 999					! Jump to label 999 (end)
+             ENDIF
+             IF (Y(K1).LT.-HALY .OR. Y(K1).GT.HALY) THEN
+                  print*,"y out-of-bound", K1, Y(K1)
+                  GOTO 999
+             ENDIF
+             IF (Z(K1).LT.-HALZ .OR. Z(K1).GT.HALZ) THEN
+                  print*,"z out-of-bound", K1, Z(K1)
+                  GOTO 999
+             ENDIF
+
+            ENDDO
+
+
+           DO K1 = 1 , NTOT-1				! Loop over all particle pairs (K1 < K2)
+
+             DO K2 = K1+1, NTOT	
+
+                TX = X(K1)-X(K2) 			! Compute x separation
+                TY = Y(K1)-Y(K2) 			! Compute y separation
+                TZ = Z(K1)-Z(K2) 			! Compute z separation
+
+C               TX = TX - ALX*DNINT(TX/ALX)		! Periodic boundary correction (disabled)
+C               TY = TY - ALY*DNINT(TY/ALY)
+C               TZ = TZ - ALZ*DNINT(TZ/ALZ)
+
+             DIST2 = TX*TX + TY*TY + TZ*TZ		! Compute squared distance
+
+
+             IF(DIST2 + 1.D-6 .LT. 1.D0) THEN		! If distance < 1 → overlap
+
+                print*,"err-Overlap", K1, K2, DIST2
+                print*,"err-Overlap", X(K1), Y(K1), Z(K1)
+                print*,"err-Overlap", X(K2), Y(K2), Z(K2)
+                print*," "
+
+               STOP					! Stop program if overlap found
+
+             ENDIF
+C             ENDIF
+
+5            CONTINUE
+
+              ENDDO
+
+            ENDDO
+            
+              
+             print*,"simulation begins"			! Notify user that simulation starts
+             PS = 3.D0					! Set external pressure
+C            PS = 15.D0
+             ASP = 4.D0					! Particle–particle attraction strength
+             AW = 0.D0					! Particle–wall attraction (0 = none)
+
+C            STEP = 0.003D0*AL				! Alternative step size formula (disabled)
+C            STEP = 0.0033D0*(ALX+ALY+ALZ)/3.D0		! Step size for particle moves
+             STEP = 0.00035D0*(ALX+ALY+ALZ)/3.D0
+C            STEP = 0.020D0*(ALX+ALY+ALZ)/3.D0
+C            STEPV = 0.01*AL				! Volume-change step (alternative)
+C            STEPV = 0.00058*(ALX+ALY+ALZ)/3.D0
+C            STEPV = 0.00058*(ALX+ALY+ALZ)/3.D0
+             STEPV = 0.00007D0*(ALX+ALY+ALZ)/3.D0	! Step size for volume moves	
+C            STEPV = 0.006*(ALX+ALY+ALZ)/3.D0		
+             TSUMO = 0.D0   				! Counter: total particle moves attempted
+             TSUMV = 0.D0    				! Counter: total volume moves attempted
+             ACCMO = 0.D0    				! Counter: accepted particle moves
+             ACCMV = 0.D0 				! Counter: accepted volume moves
+             TAV = 0.D0  				! Accumulator for average volume
+             TALX = 0.D0  				! Temporary accumulators (unused)
+             TALY = 0.D0
+             TALZ = 0.D0
+             STALX = 0.D0 				! Sum of box length samples (x)
+             STALY = 0.D0				! Sum of box length samples (y)
+             STALZ = 0.D0! 				! Sum of box length samples (z)
+
+             TCAL = 0.D0				! Counter for averaging samples
+
+
+            DO 1000  ICON = 1 , NCON   			! Main Monte Carlo loop (ICON = iteration index)
+
+                PSEL=RAND() 				! Generate random number between 0 and 1
+
+                IF(PSEL .LT. 0.55) THEN   		! With 55% chance → particle move
+
+                    TSUMO = TSUMO + 1.D0 		! Count total move attempts
+
+                  CALL MOVE(ISUC,STEP)			! Call subroutine to attempt particle move
+
+                  IF(ISUC.EQ.0) ACCMO = ACCMO + 1.	! If move accepted, increment accepted count
+
+                ELSE 					! Otherwise (45%) → volume change
+
+                   TSUMV =  TSUMV + 1.D0
+
+                   CALL MVOL(ISUC,STEPV) 		! Attempt to change box size
+
+                  IF(ISUC.EQ.0) ACCMV = ACCMV + 1.	! If accepted, count it
+
+                ENDIF
+
+
+                IF(MOD(ICON,NSKIP).EQ.0) THEN		! Every NSKIP cycles, gather statistics
+                    CALL OMEGA()			! Update radial distribution histograms
+                    TCAL = TCAL + 1.D0			! Increase averaging counter
+                    TAV = TAV + ALX*ALY*ALZ		! Add current volume to total
+                    STALX = STALX + ALX   		! Sum of ALX
+                    STALY = STALY + ALY
+                    STALZ = STALZ + ALZ
+C                   NSEED = TIME()
+C                   CALL SRAND(NSEED)
+C                   DO IR = 1, 200
+C                     XX = RAND()
+C                   ENDDO
+                ENDIF
+
+
+1000      continue
+
+           print*,"AL",ALX,ALY,ALZ				! Print final box lengths
+           print*,ACCMO/TSUMO,ACCMV/TSUMV		 	! Print acceptance ratios for moves
+           print*, "AVG-Vol", TAV/TCAL				! Print average box volume
+           print*, "AVG-AL", STALX/TCAL,STALY/TCAL,STALZ/TCAL   ! Print average side lengths
+           print*, "AREA",AREA 					! Print area (if used)
+
+
+          OPEN(14,FILE="INPUT",STATUS = "UNKNOWN")		! Rewrite INPUT file with updated box size
+
+            WRITE(14,*) NCON
+            WRITE(14,*) ALX,ALY,ALZ
+            WRITE(14,*) NTOT
+            WRITE(14,*) AREA
+
+           CLOSE(14)
+
+           OPEN(12,FILE = "POS.TXT", STATUS = "UNKNOWN")	! Save final particle positions
+
+             DO K = 1 , NTOT
+
+                WRITE(12,*) X(K),Y(K),Z(K)
+
+             ENDDO
+
+            CLOSE(12)
+
+            VOL = ALX*ALY*ALZ					! Compute final box volume
+
+            OPEN(14,FILE = "GR.TXT", STATUS = "UNKNOWN") 	! Open output for g(r)
+
+              DO I = 1, 250
+
+                 R1 = (I-1)*0.04D0				! Inner radius of bin
+                 R2 = I*0.04D0		 			! Outer radius of bin
+
+                 V12 = 4.D0*PI*(R2**3-R1**3)/3.D0   		! Volume of spherical shell
+                 BID = V12*NTOT*NTOT/VOL			! Normalization factor
+                 PG(I) = PG(I)/BID/TCAL 			! Normalize g(r)
+
+           WRITE(14,*) 0.5D0*(R1+R2),PG(I),PC(I)/V12/TCAL	! Save midpoint r, g(r), and density
+
+              ENDDO
+
+            CLOSE(14)
+
+
+111    FORMAT(1X,4F15.7)					! Define format (not used directly)
+112    FORMAT(1X,3F12.5)					! Label used for error exit
+999    CONTINUE 	          			   ! **Error/bail-out label target (NOT “end of program”)**					! End of main program
+
+       END		! End PROGRAM HS
+
+       SUBROUTINE MOVE(ISUC,STEP) ! Try moving a single random particle
+       IMPLICIT DOUBLE PRECISION (A-H,O-Z) ! Double precision default
+       DIMENSION X(1000),Y(1000),Z(1000)! Local views of arrays
+       COMMON/POS/X,Y,Z ! Positions
+       COMMON/TOT/NTOT ! Count
+       COMMON/BOX/ALX,ALY,ALZ  ! Box lengths
+       COMMON/ATT/ASP,AW	 ! Interaction multipliers
+       COMMON/HBOX/HALX,HALY,HALZ ! Half box lengths
+        
+       ISUC = 1 ! Assume REJECT unless we set to 0
+
+
+       J = INT(NTOT*RAND()) +1  ! Choose a random particle index 1..NTOT
+
+          XTRY = X(J) + STEP*(2.*RAND()-1.)   	  ! Propose random displacement in X  
+          YTRY = Y(J) + STEP*(2.*RAND()-1.)       ! Propose in Y
+          ZTRY = Z(J) + STEP*(2.*RAND()-1.)       ! Propose in Z
+
+          IF(XTRY.LT.-HALX .OR. XTRY.GT.HALX) RETURN ! Reject if out of bounds
+          IF(YTRY.LT.-HALY .OR. YTRY.GT.HALY) RETURN ! Reject if out of bounds
+          IF(ZTRY.LT.-HALZ .OR. ZTRY.GT.HALZ) RETURN ! Reject if out of bounds
+
+
+C excluded volume interaction
+
+         DO K = 1, NTOT   ! Check overlaps with all others
+
+            IF(J.NE.K) THEN
+
+               TX = XTRY - X(K)! Trial separation X
+               TY = YTRY - Y(K)! Trial separation Y
+               TZ = ZTRY - Z(K)! Trial separation Z
+
+C              TX = TX1 - ALX*DNINT(TX1/ALX) ! PBCs disabled
+C              TY = TY1 - ALY*DNINT(TY1/ALY)
+C              TZ = TZ1 - ALZ*DNINT(TZ1/ALZ)
+
+               DIST2 = TX*TX + TY*TY + TZ*TZ ! Squared distance
+
+                 IF(DIST2+1.D-6 .LT. 1.D0) RETURN ! Reject on overlap (r < 1)
+
+
+             ENDIF        
+
+          ENDDO
+
+
+          EOLD = 0.D0 				! Attractive energy before move
+          ENEW = 0.D0 				! Attractive energy after move
+
+          DO K1 = 1, NTOT  			! Pairwise tail: sum -1/r^6 for all pairs involving J
+
+           IF(J.NE.K1) THEN
+
+              TX = X(K1)-X(J)
+              TY = Y(K1)-Y(J)
+              TZ = Z(K1)-Z(J)
+
+              D2 = TX*TX + TY*TY + TZ*TZ
+              D6 = D2*D2*D2
+
+              EOLD = EOLD - 1.D0/D6  ! Old tail for (K1,J)
+
+              TX = X(K1)-XTRY
+              TY = Y(K1)-YTRY
+              TZ = Z(K1)-ZTRY
+
+              D2 = TX*TX + TY*TY + TZ*TZ
+              D6 = D2*D2*D2
+
+              ENEW = ENEW - 1.D0/D6  ! New tail for (K1,J)
+
+           ENDIF
+
+          ENDDO
+
+            EOLD = ASP*EOLD  ! Scale by pair-attraction strength
+            ENEW = ASP*ENEW
+            TT1 = 0.D0 ! Wall-field sums (old)
+            TT2 = 0.D0 ! Wall-field sums (new)
+            EWOLD=0.D0 ! Wall energy old
+            EWNEW = 0.D0 ! Wall energy new
+
+C           print*,"ASP",ENEW,EOLD ! (debug)
+
+            TX1 = (X(J)-HALX-0.5D0)**6   ! Distances to “virtual walls” (shifted by 0.5)
+            TX2 = (X(J)+HALX+0.5D0)**6
+
+            TY1 = (Y(J)-HALY-0.5D0)**6
+            TY2 = (Y(J)+HALY+0.5D0)**6
+
+            TZ1 = (Z(J)-HALZ-0.5D0)**6
+            TZ2 = (Z(J)+HALZ+0.5D0)**6
+
+            TT1 =1.D0/TX1 +1.D0/TX2 +1.D0/TY1+1.D0/TY2  ! Sum of 1/d^6 to six walls (old)
+     +             + 1.D0/TZ1 + 1.D0/TZ2
+         
+            EWOLD = EWOLD - TT1
+
+            TX1 = (XTRY-HALX-0.5D0)**6 ! Same for trial position
+            TX2 = (XTRY+HALX+0.5D0)**6
+
+            TY1 = (YTRY-HALY-0.5D0)**6
+            TY2 = (YTRY+HALY+0.5D0)**6
+
+            TZ1 = (ZTRY-HALZ-0.5D0)**6
+            TZ2 = (ZTRY+HALZ+0.5D0)**6
+
+            TT2 =1.D0/TX1 +1.D0/TX2 +1.D0/TY1+1.D0/TY2  ! Wall sum (new)
+     +           + 1.D0/TZ1 + 1.D0/TZ2
+         
+            EWNEW = EWNEW - TT2
+
+            EOLD = EOLD + EWOLD*AW  ! Add wall energy with weight AW
+            ENEW = ENEW + EWNEW*AW
+
+C           print*,"AW",EWNEW*AW,EWOLD*AW  ! (debug)
+C           print*,"ENE",ENEW,EOLD
+C           print*," "
+
+
+            IF(RAND().GT.DEXP(EOLD-ENEW)) RETURN ! Metropolis: accept if rand <= exp(Eold - Enew)
+
+C
+
+
+         ISUC = 0   ! Mark ACCEPTED
+
+            X(J) = XTRY
+            Y(J) = YTRY
+            Z(J) = ZTRY
+            
+ 
+       RETURN    ! Return to caller
+       END 
+
+       SUBROUTINE MVOL(ISUC,STEPV)  ! Try changing one box edge (anisotropic NPT-like move)
+       IMPLICIT DOUBLE PRECISION (A-H,O-Z)  ! Double precision
+       DIMENSION X(1000),Y(1000),Z(1000) ! Original coordinates
+       DIMENSION XN(1000),YN(1000),ZN(1000)  ! Trial (scaled) coordinates
+       COMMON/POS/X,Y,Z   ! Positions
+       COMMON/TOT/NTOT ! # particles
+       COMMON/BOX/ALX,ALY,ALZ ! Box lengths
+       COMMON/ATT/ASP,AW	! Interaction strengths
+       COMMON/HBOX/HALX,HALY,HALZ  ! Half-lengths
+       COMMON/SIDE/AREA   ! Optional area constraint (unused here)
+       COMMON/PRESSURE/PS  ! External pressure
+        
+       ISUC = 1  ! Assume REJECT unless we set 0
+
+       AL_NEW_X = ALX  ! Start with current box
+       AL_NEW_Y = ALY 
+       AL_NEW_Z = ALZ
+
+       IOP = INT(3.*RAND()) + 1 ! Choose which axis (1=X,2=Y,3=Z)
+
+       IF(IOP .EQ. 1) THEN  ! Propose X-length change
+
+        
+       AL_NEW_X = ALX + STEPV*(2.*RAND()-1.) ! Symmetric proposal in [-STEPV,+STEPV]
+
+       IF (AL_NEW_X .LE. 0.D0) RETURN  ! Reject nonsense
+
+C      AL_NEW_Y = ALY + STEPV*(2.*RAND()-1.) ! (Commented: simultaneous scaling variants)
+C      AL_NEW_Z = ALZ + STEPV*(2.*RAND()-1.)
+
+C      IF(AL_NEW_Y .LE. 0.D0) RETURN
+C      IF(AL_NEW_Z .LE. 0.D0) RETURN
+
+C      AL_NEW_X = 0.5D0*AREA-(AL_NEW_Y+1.D0)*(AL_NEW_Z+1.D0)! (Commented: area-coupled variant)
+C      AL_NEW_X = (AL_NEW_X/(AL_NEW_Y+AL_NEW_Z+2.D0))-1.D0
+
+       ELSEIF(IOP .EQ. 2) THEN  ! Propose Y-length change
+
+       AL_NEW_Y = ALY + STEPV*(2.*RAND()-1.)
+
+       IF(AL_NEW_Y .LE. 0.D0) RETURN
+
+C      AL_NEW_X = ALX + STEPV*(2.*RAND()-1.)
+C      AL_NEW_Z = ALZ + STEPV*(2.*RAND()-1.)
+
+C      IF(AL_NEW_X .LE. 0.) RETURN
+C      IF(AL_NEW_Z .LE. 0.) RETURN
+
+C      AL_NEW_Y = 0.5D0*AREA-(AL_NEW_X+1.D0)*(AL_NEW_Z+1.D0)
+C      AL_NEW_Y = (AL_NEW_Y/(AL_NEW_X+AL_NEW_Z+2.D0))-1.D0
+
+       ELSEIF(IOP .EQ. 3) THEN  ! Propose Z-length change
+
+       AL_NEW_Z = ALZ + STEPV*(2.*RAND()-1.)
+
+       IF(AL_NEW_Z .LE. 0.D0) RETURN
+
+C      AL_NEW_X = ALX + STEPV*(2.*RAND()-1.)
+C      AL_NEW_Y = ALY + STEPV*(2.*RAND()-1.)
+
+C      IF(AL_NEW_X .LE. 0.) RETURN
+C      IF(AL_NEW_Y .LE. 0.) RETURN
+
+C      AL_NEW_Z = 0.5D0*AREA-(AL_NEW_X+1.D0)*(AL_NEW_Y+1.D0)
+C      AL_NEW_Z = (AL_NEW_Z/(AL_NEW_X+AL_NEW_Y+2.D0))-1.D0
+
+       ENDIF
+
+C      print*,"NEW",AL_NEW_X,AL_NEW_Y,AL_NEW_Z   ! (debug)
+
+       Ratio_X = (AL_NEW_X+1.D0)/(ALX+1.D0) ! Scale factors use (L+1) convention
+       Ratio_Y = (AL_NEW_Y+1.D0)/(ALY+1.D0)
+       Ratio_Z = (AL_NEW_Z+1.D0)/(ALZ+1.D0)
+
+C      print*,"IOP",IOP
+C      print*,Ratio_X,Ratio_Y,Ratio_Z
+
+              HALX_NEW = 0.5D0*AL_NEW_X  ! New half-lengths
+              HALY_NEW = 0.5D0*AL_NEW_Y
+              HALZ_NEW = 0.5D0*AL_NEW_Z
+
+        DO J = 1 , NTOT    ! Build trial coordinates by scaling
+          XN(J) = X(J) * Ratio_X      
+        IF(XN(J).GT.HALX_NEW .OR. XN(J).LT.-HALX_NEW) RETURN  ! Reject if out of bounds
+          YN(J) = Y(J) * Ratio_Y     
+        IF(YN(J).GT.HALY_NEW .OR. YN(J).LT.-HALY_NEW) RETURN
+          ZN(J) = Z(J) * Ratio_Z     
+        IF(ZN(J).GT.HALZ_NEW .OR. ZN(J).LT.-HALZ_NEW) RETURN
+
+        ENDDO
+
+C excluded volume interaction
+
+         DO K1 = 1, NTOT - 1   ! Check overlaps with trial coords
+
+            DO K2 = K1+1, NTOT
+
+               TX = XN(K1) - XN(K2)
+               TY = YN(K1) - YN(K2)
+               TZ = ZN(K1) - ZN(K2)
+
+C              TX = TX1 - AL_NEW_X*DNINT(TX1/AL_NEW_X)   ! PBCs disabled
+C              TY = TY1 - AL_NEW_Y*DNINT(TY1/AL_NEW_Y)
+C              TZ = TZ1 - AL_NEW_Z*DNINT(TZ1/AL_NEW_Z)
+
+               DIST2 = TX*TX + TY*TY + TZ*TZ
+
+                 IF(DIST2+1.D-6 .LT. 1.D0) RETURN  ! Reject overlap
+
+            ENDDO
+
+          ENDDO
+
+          EOLD = 0.D0        ! Pair attraction energy (old box)
+          ENEW = 0.D0 ! Pair attraction energy (trial box)
+
+          DO K1 = 1, NTOT-1
+
+            DO K2 = K1+1, NTOT  ! Sum -1/r^6 for all pairs
+
+              TX = X(K1)-X(K2)
+              TY = Y(K1)-Y(K2)
+              TZ = Z(K1)-Z(K2)
+
+              D2 = TX*TX + TY*TY + TZ*TZ
+              D6 = D2*D2*D2
+
+              EOLD = EOLD - 1.D0/D6
+
+              TX = XN(K1)-XN(K2)
+              TY = YN(K1)-YN(K2)
+              TZ = ZN(K1)-ZN(K2)
+
+              D2 = TX*TX + TY*TY + TZ*TZ
+              D6 = D2*D2*D2
+
+              ENEW = ENEW - 1.D0/D6
+
+            ENDDO
+
+          ENDDO
+
+           EOLD = EOLD*ASP  ! Scale by ASP
+           ENEW = ENEW*ASP
+
+C          print*," "   ! (debug)
+C          print*,"ASP",ENEW,EOLD
+
+C             HALX_NEW = 0.5D0*AL_NEW_X  
+C             HALY_NEW = 0.5D0*AL_NEW_Y
+C             HALZ_NEW = 0.5D0*AL_NEW_Z
+
+            TT1 = 0.D0   ! Wall energy sums (old)
+            TT2 = 0.D0  ! Wall energy sums (new)
+            EWOLD = 0.D0    ! Wall energy old
+            EWNEW = 0.D0   ! Wall energy new
+
+          DO K1 = 1 , NTOT  ! Sum to six shifted walls for each particle (old box)
+
+            TX1 = (X(K1)-HALX-0.5D0)**6
+            TX2 = (X(K1)+HALX+0.5D0)**6
+
+            TY1 = (Y(K1)-HALY-0.5D0)**6
+            TY2 = (Y(K1)+HALY+0.5D0)**6
+
+            TZ1 = (Z(K1)-HALZ-0.5D0)**6
+            TZ2 = (Z(K1)+HALZ+0.5D0)**6
+
+            TT1 =1.D0/TX1 +1.D0/TX2 +1.D0/TY1+1.D0/TY2
+            TT1 = TT1 + 1.D0/TZ1 + 1.D0/TZ2
+         
+           EWOLD = EWOLD - TT1
+
+            TX1 = (XN(K1)-HALX_NEW-0.5D0)**6   ! Same for new box lengths & scaled coords
+            TX2 = (XN(K1)+HALX_NEW+0.5D0)**6
+
+            TY1 = (YN(K1)-HALY_NEW-0.5D0)**6
+            TY2 = (YN(K1)+HALY_NEW+0.5D0)**6
+
+            TZ1 = (ZN(K1)-HALZ_NEW-0.5D0)**6
+            TZ2 = (ZN(K1)+HALZ_NEW+0.5D0)**6
+
+            TT2 = 1.D0/TX1 +1.D0/TX2 +1.D0/TY1+1.D0/TY2
+            TT2 = TT2 + 1.D0/TZ1 + 1.D0/TZ2
+         
+           EWNEW = EWNEW - TT2
+
+          ENDDO
+
+             EOLD = EOLD + EWOLD*AW   ! Add wall term (old)
+             ENEW = ENEW + EWNEW*AW    ! Add wall term (new)
+
+C           print*,"AW",EWNEW*AW,EWOLD*AW  ! (debug)
+
+         VOLD = (ALX+1.D0)*(ALY+1.D0)*(ALZ+1.D0)  ! “Thermo” volume using (L+1)
+         VNEW = (AL_NEW_X+1.D0)*(AL_NEW_Y+1.D0)*(AL_NEW_Z+1.D0)
+
+C        print*,"VOLD,VNEW-1",VNEW/VOLD, -NTOT*DLOG(VNEW/VOLD)
+C        print*,"ENEW,EOLD",ENEW-EOLD, ENEW, EOLD
+C        print*," "
+
+         DH = PS*(VNEW-VOLD) - NTOT*DLOG(VNEW/VOLD)+(ENEW-EOLD)
+
+C        print*,"DH",DH,PS*(VOLD-VNEW),NTOT*DLOG(VNEW/VOLD),ENEW-EOLD
+C        print*,"exp(-DH)",DEXP(-DH)
+C        print*, " "
+
+         IF(RAND() .GT. DEXP(-DH)) RETURN
+
+         ISUC = 0
+
+         ALX = AL_NEW_X
+         ALY = AL_NEW_Y
+         ALZ = AL_NEW_Z
+
+         HALX = 0.5D0*ALX
+         HALY = 0.5D0*ALY
+         HALZ = 0.5D0*ALZ
+
+         DO J = 1 , NTOT
+
+            X(J) = XN(J)
+            Y(J) = YN(J)
+            Z(J) = ZN(J)
+
+         ENDDO
+            
+
+       RETURN
+       END 
+
+      SUBROUTINE OMEGA()
+      IMPLICIT DOUBLE PRECISION(A-H,O-Z)
+       DIMENSION X(1000),Y(1000),Z(1000)
+       COMMON/POS/X,Y,Z
+       COMMON/BOX/ALX,ALY,ALZ
+       COMMON/HBOX/HALX,HALY,HALZ
+       COMMON/TOT/NTOT
+       COMMON/P123/PG(250),PC(250)
+
+
+         DO K1 = 1 , NTOT-1
+
+           DO K2 = K1 + 1, NTOT
+
+             TX = X(K1)-X(K2)
+             TY = Y(K1)-Y(K2)
+             TZ = Z(K1)-Z(K2)
+
+C            TX = TX1 - ALX*DNINT(TX1/ALX)
+C            TY = TY1 - ALY*DNINT(TY1/ALY)
+C            TZ = TZ1 - ALZ*DNINT(TZ1/ALZ)
+
+             RT = DSQRT(TX*TX + TY*TY + TZ*TZ)
+
+             I = INT(RT/0.04D0) + 1
+
+
+             IF(I.GT.0 .AND. I.LE.250) THEN
+
+                PG(I) = PG(I) + 2.D0
+
+             ENDIF
+
+            ENDDO
+          ENDDO
+
+          DO K1 = 1 , NTOT
+
+            D2 = X(K1)*X(K1) + Y(K1)*Y(K1) + Z(K1)*Z(K1)
+
+            D2 = DSQRT(D2)
+
+            I = INT(D2/0.04D0) + 1
+
+            PC(I) = PC(I) + 1.D0
+
+          ENDDO
+
+         RETURN
+         END   
+
